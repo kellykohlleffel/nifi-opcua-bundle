@@ -331,7 +331,6 @@ public class StandardOPCUAService extends AbstractControllerService implements O
 		} catch (Exception e){
 			e.printStackTrace();
 		}
- 
     }
 
 	@Override
@@ -507,13 +506,12 @@ public class StandardOPCUAService extends AbstractControllerService implements O
 		
 		// Form response, make request 
 		BrowseResponse browseResponse = new BrowseResponse();
+
 		try {
 			browseResponse = mySession.Browse(browseRequest.getRequestHeader(), browseRequest.getView(), max_reference_per_node, browseRequest.getNodesToBrowse());
 		} catch (Exception e) {
-
-			logger.error("failed to get browse response for " + browseRequest.getNodesToBrowse());
-			
-		} 
+			logger.error("failed to get browse response for " + browseRequest.getRequestHeader());
+		}
 		
 		// Get results
 		BrowseResult[] browseResults = browseResponse.getResults();
