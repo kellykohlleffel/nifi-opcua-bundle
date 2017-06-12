@@ -34,8 +34,4 @@ public interface OPCUAService extends ControllerService {
 			throws ProcessException;
 
 	boolean updateSession();
-
-	String getCurrentTagList();
-
-	void setCurrentTagList(String currentTagList);
 }

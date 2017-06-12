@@ -42,33 +42,28 @@ import java.util.stream.Collectors;
 
 @Tags({"OPC", "OPCUA", "UA"})
 @CapabilityDescription("Fetches a response from an OPC UA server based on configured name space and input item names")
-@SeeAlso({})
-@ReadsAttributes({@ReadsAttribute(attribute="", description="")})
-@WritesAttributes({@WritesAttribute(attribute="", description="")})
-//@InputRequirement(Requirement.INPUT_REQUIRED)
-
+@SeeAlso()
+@ReadsAttributes({@ReadsAttribute(attribute="")})
+@WritesAttributes({@WritesAttribute(attribute="")})
 public class GetOPCData extends AbstractProcessor {
 
     private final AtomicReference<String> timestamp = new AtomicReference<>();
     private final AtomicReference<String> excludeNullValue = new AtomicReference<>();
     private String nullValueString = "";
+    private java.time.LocalDateTime lastTagListRefresh;
 
     private ComponentLog logger;
     private String query = "";
 
-    public GetOPCData(){
-
-    }
-
-	public static final PropertyDescriptor OPCUA_SERVICE = new PropertyDescriptor.Builder()
+    private static final PropertyDescriptor OPCUA_SERVICE = new PropertyDescriptor.Builder()
 			  .name("OPC UA Service")
 			  .description("Specifies the OPC UA Service that can be used to access data")
 			  .required(true)
 			  .identifiesControllerService(OPCUAService.class)
               .sensitive(false)
 			  .build();
-    
-	public static final PropertyDescriptor RETURN_TIMESTAMP = new PropertyDescriptor
+
+    private static final PropertyDescriptor RETURN_TIMESTAMP = new PropertyDescriptor
             .Builder().name("Return Timestamp")
             .description("Allows to select the source, server, or both timestamps")
             .required(true)
@@ -77,7 +72,7 @@ public class GetOPCData extends AbstractProcessor {
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .build();
 
-    public static final PropertyDescriptor TAG_LIST_SOURCE = new PropertyDescriptor
+    private static final PropertyDescriptor TAG_LIST_SOURCE = new PropertyDescriptor
             .Builder().name("Tag List Source")
             .description("Either get the tag list from the flow file, or from a dynamic property")
             .required(true)
@@ -86,15 +81,23 @@ public class GetOPCData extends AbstractProcessor {
             .sensitive(false)
             .build();
 
-    public static final PropertyDescriptor TAG_LIST_FILE = new PropertyDescriptor
+    private static final PropertyDescriptor TAG_LIST_FILE = new PropertyDescriptor
             .Builder().name("Default Tag List Name")
             .description("The location of the tag list file")
             .required(true)
             .addValidator(StandardValidators.FILE_EXISTS_VALIDATOR)
             .sensitive(false)
             .build();
-	 
-	public static final PropertyDescriptor EXCLUDE_NULL_VALUE = new PropertyDescriptor
+
+    private static final PropertyDescriptor TAG_LIST_FILE_CACHE = new PropertyDescriptor
+            .Builder().name("Tag List Cache Expiry Time")
+            .description("The number of seconds between tag list re-reads")
+            .required(false)
+            .addValidator(StandardValidators.INTEGER_VALIDATOR)
+            .sensitive(false)
+            .build();
+
+    private static final PropertyDescriptor EXCLUDE_NULL_VALUE = new PropertyDescriptor
             .Builder().name("Exclude Null Value")
             .description("Return data only for non null values")
             .required(true)
@@ -104,19 +107,19 @@ public class GetOPCData extends AbstractProcessor {
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .build();
 
-    public static final PropertyDescriptor NULL_VALUE_STRING = new PropertyDescriptor
+    private static final PropertyDescriptor NULL_VALUE_STRING = new PropertyDescriptor
             .Builder().name("Null Value String")
             .description("If removing null values, what string is used for null")
             .required(false)
             .sensitive(false)
             .build();
-	 
-    public static final Relationship SUCCESS = new Relationship.Builder()
+
+    private static final Relationship SUCCESS = new Relationship.Builder()
             .name("Success")
             .description("Successful OPC Data read")
             .build();
     
-    public static final Relationship FAILURE = new Relationship.Builder()
+    private static final Relationship FAILURE = new Relationship.Builder()
             .name("Failure")
             .description("Failed OPC Data read")
             .build();
@@ -134,6 +137,7 @@ public class GetOPCData extends AbstractProcessor {
         descriptors.add(NULL_VALUE_STRING);
         descriptors.add(TAG_LIST_FILE);
         descriptors.add(TAG_LIST_SOURCE);
+        descriptors.add(TAG_LIST_FILE_CACHE);
         
         this.descriptors = Collections.unmodifiableList(descriptors);
 
@@ -177,7 +181,6 @@ public class GetOPCData extends AbstractProcessor {
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) throws ProcessException {
         logger = getLogger();
-
     	// Initialize  response variable
         final AtomicReference<List<String>> requestedTagnames = new AtomicReference<>();
         // Submit to getValue
@@ -200,7 +203,6 @@ public class GetOPCData extends AbstractProcessor {
 
             // Read tag name from flow file content
             session.read(flowFile, in -> {
-
                 try {
                     List<String> tagname = new BufferedReader(new InputStreamReader(in))
                             .lines().collect(Collectors.toList());
@@ -210,36 +212,19 @@ public class GetOPCData extends AbstractProcessor {
                 } catch (Exception e) {
                     logger.error("Failed to read flowfile " + e.getMessage());
                 }
-
             });
         }
         else
         {
             try {
-                if (query.equals(""))
-                {
-                    try {
-                        query = parseFile(Paths.get(context.getProperty(TAG_LIST_FILE).toString()));
-                    } catch (IOException e) {
-                        logger.error("Error reading tag list from Property.");
-                    }
-                }
-                if (query.equals(""))
-                {
-                    logger.error("Tag list " + opcUAService.getCurrentTagList() + " not registered in the tag list registry correctly.");
-                    return;
-                }
-                List<String> tagNamesList = new BufferedReader(new StringReader(query)).lines().collect(Collectors.toList());
-                requestedTagnames.set(tagNamesList);
+                List<String> requestedTags = getTagList(context.getProperty(TAG_LIST_FILE).toString());
+                requestedTagnames.set(requestedTags);
             }
             catch (Exception ex){
                 logger.error(ex.getMessage());
                 return;
             }
         }
-        
-
-
 
         if(opcUAService.updateSession()){
         	logger.debug("Session current");
@@ -248,20 +233,38 @@ public class GetOPCData extends AbstractProcessor {
         }
 
         byte[] values = opcUAService.getValue(requestedTagnames.get(),timestamp.get(),excludeNullValue.get(),nullValueString);
+
         FlowFile flowFile;
         flowFile = session.get();
+
         if (flowFile == null)
             flowFile = session.create();
-  		// Write the results back out to flow file
-        try{
 
+        // Write the results back out to flow file
+        try{
             flowFile = session.write(flowFile, out -> out.write(values));
-        
-        session.transfer(flowFile, SUCCESS);
+            session.transfer(flowFile, SUCCESS);
         } catch (ProcessException ex) {
         	logger.error("Unable to process", ex);
         	session.transfer(flowFile, FAILURE);
         }
+    }
+
+    private List<String> getTagList(String tagListFile){
+        if (query.equals(""))
+        {
+            try {
+                query = parseFile(Paths.get(tagListFile));
+            } catch (IOException e) {
+                logger.error("Error reading tag list from Property.");
+            }
+        }
+        if (query.equals(""))
+        {
+            logger.error("Tag list " + tagListFile + " could not be read.");
+            return null;
+        }
+        return new BufferedReader(new StringReader(query)).lines().collect(Collectors.toList());
     }
 
     private String parseFile(Path filePath) throws IOException

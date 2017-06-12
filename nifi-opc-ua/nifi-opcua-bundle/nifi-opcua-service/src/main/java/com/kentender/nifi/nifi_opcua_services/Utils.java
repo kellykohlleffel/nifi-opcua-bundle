@@ -26,21 +26,18 @@ import org.slf4j.LoggerFactory;
 public class Utils {
 	
 		private static final Logger logger = LoggerFactory.getLogger(Utils.class);
-		static String PRIVKEY_PASSWORD = "Opc.Ua";
+		private static String PRIVKEY_PASSWORD = "Opc.Ua";
 	
 	 	public static KeyPair getCert(String applicationName) {
-	    	
 	    	//create a key pair - I have changed the original .pem extension to .key
 	  		return getCert(applicationName, SecurityPolicy.NONE);
-				
 		}
 		
 	    public static KeyPair getCert(String applicationName, org.opcfoundation.ua.transport.security.SecurityPolicy securityPolicy) {
-	    	
 	    	//create a key pair - I have changed the original .pem extension to .key
 	  		return getCert(applicationName, applicationName + ".der", applicationName + ".key", securityPolicy);
-				
 		}
+
 	    public static KeyPair getCert(String applicationName, String cert, String key, org.opcfoundation.ua.transport.security.SecurityPolicy securityPolicy) {
 			
 			File certFile = new File(cert);
@@ -55,28 +52,9 @@ public class Utils {
 				logger.error(e.getMessage());
 			} catch (NoSuchAlgorithmException e) {
 				logger.error(e.getMessage());
-			} catch (InvalidKeyException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (InvalidKeySpecException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (NoSuchPaddingException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (InvalidAlgorithmParameterException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (IllegalBlockSizeException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (BadPaddingException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (InvalidParameterSpecException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (IOException e) {		
+			} catch (InvalidKeyException | InvalidParameterSpecException | BadPaddingException | IllegalBlockSizeException | InvalidAlgorithmParameterException | NoSuchPaddingException | InvalidKeySpecException e) {
+				logger.error("Issue in getCert " + e.getMessage());
+			} catch (IOException e) {
 				try {
 					String hostName = InetAddress.getLocalHost().getHostName();
 					String applicationUri = "urn:"+hostName+":"+applicationName;
@@ -99,18 +77,16 @@ public class Utils {
 					} else if(securityPolicy == SecurityPolicy.BASIC256SHA256){
 						CertificateUtils.setKeySize(2028);
 						CertificateUtils.setCertificateSignatureAlgorithm("SHA256WithRSA");
-					} else {
-						//nothing to do yet
 					}
-					
+
 					KeyPair keys = CertificateUtils.createApplicationInstanceCertificate(applicationName, null, applicationUri, 3650, hostName);
 					keys.getCertificate().save(certFile);
 					keys.getPrivateKey().save(privKeyFile);
 					
 					return keys;
 					
-				} catch (Exception e1) {
-					logger.error(e1.getMessage());
+				} catch (Exception ex) {
+					logger.error(ex.getMessage());
 				}
 			}
 			return null;
@@ -123,41 +99,14 @@ public class Utils {
 				Cert myServerCertificate = Cert.load( certFile );
 				PrivKey myServerPrivateKey = PrivKey.load( privKeyFile, PRIVKEY_PASSWORD );
 				return new KeyPair(myServerCertificate, myServerPrivateKey); 
-			} catch (CertificateException e) {
+			} catch (CertificateException | InvalidKeyException | NoSuchAlgorithmException e) {
 				
 				logger.error(e.getMessage());
-			} catch (NoSuchAlgorithmException e) {
-				
-				logger.error(e.getMessage());
-			} catch (InvalidKeyException e) {
-				// TODO Auto-generated catch block
-				
-				logger.error(e.getMessage());
-			} catch (InvalidKeySpecException e) {
+			} catch (InvalidKeySpecException | InvalidParameterSpecException | BadPaddingException | IllegalBlockSizeException | InvalidAlgorithmParameterException | NoSuchPaddingException e) {
 				// TODO Auto-generated catch block
 				
 				e.printStackTrace();
-			} catch (NoSuchPaddingException e) {
-				// TODO Auto-generated catch block
-				
-				e.printStackTrace();
-			} catch (InvalidAlgorithmParameterException e) {
-				// TODO Auto-generated catch block
-				
-				e.printStackTrace();
-			} catch (IllegalBlockSizeException e) {
-				// TODO Auto-generated catch block
-				
-				e.printStackTrace();
-			} catch (BadPaddingException e) {
-				// TODO Auto-generated catch block
-				
-				e.printStackTrace();
-			} catch (InvalidParameterSpecException e) {
-				// TODO Auto-generated catch block
-				
-				e.printStackTrace();
-			} catch (IOException e) {	
+			} catch (IOException e) {
 
 				try {
 					KeyPair caCert = getCACert();
@@ -180,7 +129,7 @@ public class Utils {
 				Cert myServerCertificate = Cert.load( certFile );
 				PrivKey myServerPrivateKey = PrivKey.load( privKeyFile, PRIVKEY_PASSWORD );
 				return new KeyPair(myServerCertificate, myServerPrivateKey); 
-			} catch (CertificateException e) {
+			} catch (CertificateException | NoSuchAlgorithmException e) {
 				logger.error(e.getMessage());
 			} catch (IOException e) {		
 				try {
@@ -191,27 +140,7 @@ public class Utils {
 				} catch (Exception e1) {
 					logger.error(e1.getMessage());
 				}
-			} catch (NoSuchAlgorithmException e) {
-				logger.error(e.getMessage());
-			} catch (InvalidKeyException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (InvalidKeySpecException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (NoSuchPaddingException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (InvalidAlgorithmParameterException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (IllegalBlockSizeException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (BadPaddingException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (InvalidParameterSpecException e) {
+			} catch (InvalidKeyException | InvalidKeySpecException | InvalidAlgorithmParameterException | NoSuchPaddingException | IllegalBlockSizeException | BadPaddingException | InvalidParameterSpecException e) {
 				// TODO Auto-generated catch block
 				e.printStackTrace();
 			}

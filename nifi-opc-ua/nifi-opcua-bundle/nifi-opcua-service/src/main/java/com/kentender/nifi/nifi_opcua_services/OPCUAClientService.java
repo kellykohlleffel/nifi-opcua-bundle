@@ -67,43 +67,56 @@ import org.opcfoundation.ua.utils.EndpointUtil;
 public class OPCUAClientService extends AbstractControllerService implements OPCUAService {
 	
 	// Global session variables used by all processors using an instance
-	private static Client myClient = null;
-	private static SessionChannel mySession = null;
+	private static Client opcUaClient = null;
+	private static SessionChannel opcUaSession = null;
 	private static EndpointDescription endpointDescription = null;
 	private double timestamp;
 
-	private String currentTagList;
-
-	// Properties 
-	public static final PropertyDescriptor ENDPOINT = new PropertyDescriptor
+	// Properties
+	private static final PropertyDescriptor ENDPOINT = new PropertyDescriptor
             .Builder().name("Endpoint URL")
             .description("the opc.tcp address of the opc ua server")
             .required(true)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .build();
-	
-	public static final PropertyDescriptor SERVER_CERT = new PropertyDescriptor
+
+	private static final PropertyDescriptor SERVER_CERT = new PropertyDescriptor
             .Builder().name("Certificate for Server application")
             .description("Certificate in .der format for server Nifi will connect, if left blank Nifi will attempt to retreive the certificate from the server")
             .addValidator(StandardValidators.FILE_EXISTS_VALIDATOR)
             .build();
-    
-    public static final PropertyDescriptor SECURITY_POLICY = new PropertyDescriptor
+
+	private static final PropertyDescriptor SECURITY_POLICY = new PropertyDescriptor
             .Builder().name("Security Policy")
             .description("How should Nifi authenticate with the UA server")
             .required(true)
             .allowableValues("None", "Basic128Rsa15", "Basic256", "Basic256Rsa256")
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .build();
-    
-    public static final PropertyDescriptor APPLICATION_NAME = new PropertyDescriptor
+
+	private static final PropertyDescriptor APPLICATION_NAME = new PropertyDescriptor
             .Builder().name("Application Name")
             .description("The application name is used to label certificates identifying this application")
             .required(true)
             .addValidator(StandardValidators.NON_BLANK_VALIDATOR)
             .build();
 
-    private static final List<PropertyDescriptor> properties;
+    private static final PropertyDescriptor USER_NAME = new PropertyDescriptor
+            .Builder().name("User Name")
+            .description("The user name to access the OPC UA server")
+            .required(false)
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .build();
+
+    private static final PropertyDescriptor PASSWORD = new PropertyDescriptor
+            .Builder().name("Password")
+            .description("The password to access the OPC UA server")
+            .required(false)
+            .sensitive(true)
+            .addValidator(StandardValidators.FILE_EXISTS_VALIDATOR)
+            .build();
+
+	private static final List<PropertyDescriptor> properties;
 
     static {
         final List<PropertyDescriptor> props = new ArrayList<>();
@@ -111,6 +124,9 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
         props.add(SECURITY_POLICY);
         props.add(SERVER_CERT);
         props.add(APPLICATION_NAME);
+        props.add(USER_NAME);
+        props.add(PASSWORD);
+
         properties = Collections.unmodifiableList(props);
     }
 
@@ -130,38 +146,38 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
     	
     	final ComponentLog logger = getLogger();
     	EndpointDescription[] endpointDescriptions = null;   
-    	KeyPair myClientApplicationInstanceCertificate = null;
-    	KeyPair myHttpsCertificate = null;
+    	KeyPair opcUaClientApplicationInstanceCertificate;
+    	KeyPair opcUaHttpsCertificate = null;
     	
 		// Initialize OPC UA Client
     	
     	// Load Client's certificates from file or create new certs
     	logger.debug("Creating Certificates");
     	
-		if (context.getProperty(SECURITY_POLICY).getValue() == "None"){
+		if (context.getProperty(SECURITY_POLICY).getValue().equals("None")){
 			// Build OPC Client
 			logger.info("No Security Policy requested");
-			myClientApplicationInstanceCertificate = null;
+			opcUaClientApplicationInstanceCertificate = null;
 						
 		} else {
 			
-			myHttpsCertificate = Utils.getHttpsCert(context.getProperty(APPLICATION_NAME).getValue());
+			opcUaHttpsCertificate = Utils.getHttpsCert(context.getProperty(APPLICATION_NAME).getValue());
 			
 			// Load or create HTTP and Client's Application Instance Certificate and key
 			switch (context.getProperty(SECURITY_POLICY).getValue()) {
 				case "Basic128Rsa15":{
-					myClientApplicationInstanceCertificate = Utils.getCert(context.getProperty(APPLICATION_NAME).getValue(), SecurityPolicy.BASIC128RSA15);
+					opcUaClientApplicationInstanceCertificate = Utils.getCert(context.getProperty(APPLICATION_NAME).getValue(), SecurityPolicy.BASIC128RSA15);
 					break;
 					
 				}case "Basic256": {
-					myClientApplicationInstanceCertificate = Utils.getCert(context.getProperty(APPLICATION_NAME).getValue(), SecurityPolicy.BASIC256);
+					opcUaClientApplicationInstanceCertificate = Utils.getCert(context.getProperty(APPLICATION_NAME).getValue(), SecurityPolicy.BASIC256);
 					break;
 					
 				}case "Basic256Rsa256": {
-					myClientApplicationInstanceCertificate = Utils.getCert(context.getProperty(APPLICATION_NAME).getValue(), SecurityPolicy.BASIC256SHA256);
+					opcUaClientApplicationInstanceCertificate = Utils.getCert(context.getProperty(APPLICATION_NAME).getValue(), SecurityPolicy.BASIC256SHA256);
 					break;
 				}default: {
-					myClientApplicationInstanceCertificate = null;
+					opcUaClientApplicationInstanceCertificate = null;
 					break;
 				}
 			}
@@ -170,11 +186,11 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 		logger.info("Creating Client");
 		
 		// Create Client
-		myClient = Client.createClientApplication( myClientApplicationInstanceCertificate ); 
-		myClient.getApplication().getHttpsSettings().setKeyPair(myHttpsCertificate);
-		myClient.getApplication().addLocale( Locale.ENGLISH );
-		myClient.getApplication().setApplicationName( new LocalizedText(context.getProperty(APPLICATION_NAME).getValue(), Locale.ENGLISH) );
-		myClient.getApplication().setProductUri( "urn:" + context.getProperty(APPLICATION_NAME).getValue() );
+		opcUaClient = Client.createClientApplication( opcUaClientApplicationInstanceCertificate );
+		opcUaClient.getApplication().getHttpsSettings().setKeyPair(opcUaHttpsCertificate);
+		opcUaClient.getApplication().addLocale( Locale.ENGLISH );
+		opcUaClient.getApplication().setApplicationName( new LocalizedText(context.getProperty(APPLICATION_NAME).getValue(), Locale.ENGLISH));
+		opcUaClient.getApplication().setProductUri( "urn:" + context.getProperty(APPLICATION_NAME).getValue() );
 		
 		
 		// if a certificate is provided
@@ -220,15 +236,17 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 		} else {
 			try {
 				logger.info("Discovering endpoints from" +  context.getProperty(ENDPOINT).getValue());
-				endpointDescriptions = myClient.discoverEndpoints(context.getProperty(ENDPOINT).getValue());
-				if (endpointDescriptions == null) {
-					logger.error("Endpoint descriptions not received.");
-					return;
-				}
-			} catch (ServiceResultException e1) {
-				
-				logger.error("Issue getting service endpoint descriptions: " + e1.getMessage());
+				endpointDescriptions = opcUaClient.discoverEndpoints(context.getProperty(ENDPOINT).getValue());
+
+			} catch (ServiceResultException ex) {
+				logger.error("Issue getting service endpoint descriptions: " + ex.getMessage());
 			}
+
+			if (endpointDescriptions == null) {
+				logger.error("Endpoint descriptions not received.");
+				return;
+			}
+
 			switch (context.getProperty(SECURITY_POLICY).getValue()) {
 			
 				case "Basic128Rsa15":{
@@ -262,10 +280,9 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 		
 		try {
 			
-			
-			mySession = myClient.createSessionChannel(endpointDescription);
-			ActivateSessionResponse activateSessionResponse = mySession.activate();
-			
+
+			opcUaSession = opcUaClient.createSessionChannel(endpointDescription);
+			opcUaSession.activate();
 			timestamp = System.currentTimeMillis();
 			
 		} catch (ServiceResultException e) {
@@ -287,7 +304,7 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 			logger.debug("not a valid timestamp");
 			return false;
 		}
-		if ((elapsedTime ) < mySession.getSession().getSessionTimeout()){
+		if ((elapsedTime ) < opcUaSession.getSession().getSessionTimeout()){
 			
 			timestamp = System.currentTimeMillis();
 			
@@ -297,31 +314,19 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 			try {
 				
 				// TODO future should support multi session management 
-				mySession = myClient.createSessionChannel(endpointDescription);
-				mySession.activate();
+				opcUaSession = opcUaClient.createSessionChannel(endpointDescription);
+				opcUaSession.activate();
 				
 				timestamp = System.currentTimeMillis();
 				
 				return true;
 				
 			} catch (ServiceResultException e) {
-				logger.debug("Error while creating new session: ");
-				logger.error(e.getMessage());
+				logger.error("Error while updating session " + e.getMessage());
 				return false;
 			}
 		}
 	}
-
-	@Override
-	public String getCurrentTagList() {
-		return currentTagList;
-	}
-
-	@Override
-	public void setCurrentTagList(String currentTagList) {
-		this.currentTagList = currentTagList;
-	}
-
 
 	@OnDisabled
     public void shutdown() {
@@ -329,16 +334,12 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
     	final ComponentLog logger = getLogger();
         
         try {
-        	if ( mySession != null )
-			mySession.close();
-		} catch (ServiceFaultException e) {
-			logger.debug(e.getMessage());
-			e.printStackTrace();
+        	if ( opcUaSession != null )
+			opcUaSession.close();
 		} catch (ServiceResultException e) {
-			logger.debug(e.getMessage());
-			e.printStackTrace();
+			logger.error("Error in OnDisabled " + e.getMessage());
 		} catch (Exception e){
-			e.printStackTrace();
+            logger.error("Error in OnDisabled " + e.getMessage());
 		}
  
     }
@@ -352,13 +353,17 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 
 		for (int i = 0; i < reqTagnames.size(); i++){
             try{
-				nodesToRead[i] = (new ReadValueId(NodeId.parseNodeId(reqTagnames.get(i)), Attributes.Value, null, null));
-			}catch(Exception ex){
+				nodesToRead[i] = (new ReadValueId(NodeId.parseNodeId(reqTagnames.get(i)),
+                        Attributes.Value,
+                        null,
+                        null));
+			}
+			catch(Exception ex){
 				logger.error("error reading nodeId for" + reqTagnames.get(i));
 			}
 		}
 
-		String serverResponse = "";
+		StringBuilder serverResponse = new StringBuilder();
 
         // Form OPC request
         ReadRequest req = new ReadRequest();
@@ -369,7 +374,7 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 
         // Submit OPC Read and handle response
         try{
-            ReadResponse readResponse = mySession.Read(req);
+            ReadResponse readResponse = opcUaSession.Read(req);
             DataValue[] values = readResponse.getResults();
 
             // Validate response
@@ -409,11 +414,11 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
                         if (valueLine.isEmpty())
                         	continue;
 
-                        serverResponse += valueLine;
+                        serverResponse.append(valueLine);
                     }
 
                     //clean up response
-                    serverResponse.trim();
+                    return serverResponse.toString().trim().getBytes();
                 }
             }
 
@@ -421,7 +426,7 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
             logger.error("Error parsing OPC Server Results: " + e.getMessage() + Arrays.toString(e.getStackTrace()));
         }
 
-        return serverResponse.getBytes();
+        return serverResponse.toString().getBytes();
 	}
 
 	@Override
@@ -433,7 +438,12 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 		for(ExpandedNodeId expNodeId : expandedNodeIds){
 			// Set the starting node and parse the node tree
 			logger.debug("Parse the result list for node " + expNodeId.toString());
-			stringBuilder.append(parseNodeTree(print_indentation, 0, max_recursiveDepth, expNodeId,max_reference_per_node, logger));
+			stringBuilder.append(parseNodeTree(print_indentation,
+                    0,
+                    max_recursiveDepth,
+                    expNodeId,
+                    max_reference_per_node,
+                    logger));
 		}
 
 		return stringBuilder.toString();
@@ -451,8 +461,8 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 		// This assumes the provided url is co-served with the discovery server
 		try {
 			endpoints = client.discoverEndpoints(discoveryServer);
-		} catch (ServiceResultException e1) {
-			logger.error(e1.getMessage());
+		} catch (ServiceResultException ex) {
+			logger.error(ex.getMessage());
 		}
 		
 		// Finally confirm the provided endpoint is in the list of 
@@ -517,7 +527,7 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 		// Form response, make request 
 		BrowseResponse browseResponse = new BrowseResponse();
 		try {
-			browseResponse = mySession.Browse(browseRequest.getRequestHeader(), browseRequest.getView(), max_reference_per_node, browseRequest.getNodesToBrowse());
+			browseResponse = opcUaSession.Browse(browseRequest.getRequestHeader(), browseRequest.getView(), max_reference_per_node, browseRequest.getNodesToBrowse());
 		} catch (Exception e) {
 
 			logger.error("failed to get browse response for " + browseRequest.getNodesToBrowse());
@@ -537,34 +547,29 @@ public class OPCUAClientService extends AbstractControllerService implements OPC
 		}
 		
 		// Situation 2: There are results descriptions and each node must be parsed
-		for(int k = 0; k < referenceDesc.length; k++){
-				
-			// Print indentation	
-			switch (print_indentation) {
-			
-				case "Yes":{
-					for(int j = 0; j < recursiveDepth; j++){
-						stringBuilder.append("- ");
-					}
-				}
-			}
-			
-			// Print the current node
-			stringBuilder.append(referenceDesc[k].getNodeId() + System.lineSeparator());
-			
-			// Print the child node(s)
-			String str = parseNodeTree(print_indentation, recursiveDepth + 1, max_recursiveDepth, referenceDesc[k].getNodeId(),max_reference_per_node,logger);
-			if (str != null){
-				stringBuilder.append(str);
-			}
-			
-			
-		}
-		
+        for (ReferenceDescription aReferenceDesc : referenceDesc) {
+
+            // Print indentation
+            switch (print_indentation) {
+
+                case "Yes": {
+                    for (int j = 0; j < recursiveDepth; j++) {
+                        stringBuilder.append("- ");
+                    }
+                }
+            }
+
+            // Print the current node
+            stringBuilder.append(aReferenceDesc.getNodeId()).append(System.lineSeparator());
+
+            // Print the child node(s)
+            String str = parseNodeTree(print_indentation, recursiveDepth + 1, max_recursiveDepth, aReferenceDesc.getNodeId(), max_reference_per_node, logger);
+            if (str != null) {
+                stringBuilder.append(str);
+            }
+        }
+
+        // we have exhausted the child nodes of the given node
 		return stringBuilder.toString();
-		
-		// we have exhausted the child nodes of the given node
 	}
-
-
 }
