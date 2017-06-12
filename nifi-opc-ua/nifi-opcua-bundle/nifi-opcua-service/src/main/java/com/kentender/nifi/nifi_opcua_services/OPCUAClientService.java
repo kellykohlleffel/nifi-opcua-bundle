@@ -21,7 +21,6 @@ import static org.opcfoundation.ua.utils.EndpointUtil.selectBySecurityPolicy;
 import java.io.File;
 import java.util.*;
 
-import javafx.scene.control.IndexRange;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.annotation.lifecycle.OnDisabled;
@@ -65,14 +64,15 @@ import org.opcfoundation.ua.utils.EndpointUtil;
 
 @Tags({"OPC", "OPCUA", "UA"})
 @CapabilityDescription("Provides session management for OPC UA processors")
-public class StandardOPCUAService extends AbstractControllerService implements OPCUAService {
+public class OPCUAClientService extends AbstractControllerService implements OPCUAService {
 	
 	// Global session variables used by all processors using an instance
 	private static Client myClient = null;
 	private static SessionChannel mySession = null;
 	private static EndpointDescription endpointDescription = null;
-	private static ActivateSessionResponse activateSessionResponse = null;
 	private double timestamp;
+
+	private String currentTagList;
 
 	// Properties 
 	public static final PropertyDescriptor ENDPOINT = new PropertyDescriptor
@@ -129,7 +129,6 @@ public class StandardOPCUAService extends AbstractControllerService implements O
     public void onEnabled(final ConfigurationContext context) throws InitializationException {
     	
     	final ComponentLog logger = getLogger();
-    	logger.info("Creating variables");
     	EndpointDescription[] endpointDescriptions = null;   
     	KeyPair myClientApplicationInstanceCertificate = null;
     	KeyPair myHttpsCertificate = null;
@@ -265,7 +264,7 @@ public class StandardOPCUAService extends AbstractControllerService implements O
 			
 			
 			mySession = myClient.createSessionChannel(endpointDescription);
-			activateSessionResponse = mySession.activate();
+			ActivateSessionResponse activateSessionResponse = mySession.activate();
 			
 			timestamp = System.currentTimeMillis();
 			
@@ -312,9 +311,19 @@ public class StandardOPCUAService extends AbstractControllerService implements O
 			}
 		}
 	}
-    
-    
-    @OnDisabled
+
+	@Override
+	public String getCurrentTagList() {
+		return currentTagList;
+	}
+
+	@Override
+	public void setCurrentTagList(String currentTagList) {
+		this.currentTagList = currentTagList;
+	}
+
+
+	@OnDisabled
     public void shutdown() {
     	// Close the session 
     	final ComponentLog logger = getLogger();

@@ -17,32 +17,25 @@
 
 package com.kentender.nifi.nifi_opcua_bundle;
 
+import org.apache.nifi.annotation.behavior.*;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.*;
-import org.apache.nifi.annotation.behavior.InputRequirement;
-import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
-import org.apache.nifi.annotation.behavior.ReadsAttribute;
-import org.apache.nifi.annotation.behavior.ReadsAttributes;
-import org.apache.nifi.annotation.behavior.WritesAttribute;
-import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.processor.exception.ProcessException;
-import org.apache.nifi.processor.io.InputStreamCallback;
-import org.apache.nifi.processor.io.OutputStreamCallback;
 import org.apache.nifi.processor.util.StandardValidators;
 
 import com.kentender.nifi.nifi_opcua_services.OPCUAService;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.io.*;
+import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -52,54 +45,80 @@ import java.util.stream.Collectors;
 @SeeAlso({})
 @ReadsAttributes({@ReadsAttribute(attribute="", description="")})
 @WritesAttributes({@WritesAttribute(attribute="", description="")})
-@InputRequirement(Requirement.INPUT_REQUIRED)
+//@InputRequirement(Requirement.INPUT_REQUIRED)
 
-public class GetValue extends AbstractProcessor {
+public class GetOPCData extends AbstractProcessor {
 
     private final AtomicReference<String> timestamp = new AtomicReference<>();
     private final AtomicReference<String> excludeNullValue = new AtomicReference<>();
-    private final AtomicReference<String> nullValueString = new AtomicReference<>();
+    private String nullValueString = "";
+
+    private ComponentLog logger;
+    private String query = "";
+
+    public GetOPCData(){
+
+    }
 
 	public static final PropertyDescriptor OPCUA_SERVICE = new PropertyDescriptor.Builder()
 			  .name("OPC UA Service")
 			  .description("Specifies the OPC UA Service that can be used to access data")
 			  .required(true)
 			  .identifiesControllerService(OPCUAService.class)
+              .sensitive(false)
 			  .build();
     
 	public static final PropertyDescriptor RETURN_TIMESTAMP = new PropertyDescriptor
             .Builder().name("Return Timestamp")
             .description("Allows to select the source, server, or both timestamps")
             .required(true)
+            .sensitive(false)
             .allowableValues("SourceTimestamp", "ServerTimestamp","Both")
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .build();
+
+    public static final PropertyDescriptor TAG_LIST_SOURCE = new PropertyDescriptor
+            .Builder().name("Tag List Source")
+            .description("Either get the tag list from the flow file, or from a dynamic property")
+            .required(true)
+            .allowableValues("Flowfile", "Property")
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .sensitive(false)
+            .build();
+
+    public static final PropertyDescriptor TAG_LIST_FILE = new PropertyDescriptor
+            .Builder().name("Default Tag List Name")
+            .description("The location of the tag list file")
+            .required(true)
+            .addValidator(StandardValidators.FILE_EXISTS_VALIDATOR)
+            .sensitive(false)
+            .build();
 	 
 	public static final PropertyDescriptor EXCLUDE_NULL_VALUE = new PropertyDescriptor
-	            .Builder().name("Exclude Null Value")
-	            .description("Return data only for non null values")
-	            .required(true)
-	            .allowableValues("No", "Yes")
-	            .defaultValue("No")
-	            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
-	            .build();
+            .Builder().name("Exclude Null Value")
+            .description("Return data only for non null values")
+            .required(true)
+            .sensitive(false)
+            .allowableValues("No", "Yes")
+            .defaultValue("No")
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .build();
 
     public static final PropertyDescriptor NULL_VALUE_STRING = new PropertyDescriptor
             .Builder().name("Null Value String")
             .description("If removing null values, what string is used for null")
             .required(false)
-            .defaultValue("")
-            .addValidator(StandardValidators.NON_BLANK_VALIDATOR)
+            .sensitive(false)
             .build();
 	 
     public static final Relationship SUCCESS = new Relationship.Builder()
             .name("Success")
-            .description("Successful OPC read")
+            .description("Successful OPC Data read")
             .build();
     
     public static final Relationship FAILURE = new Relationship.Builder()
-            .name("FAILURE")
-            .description("Failed OPC read")
+            .name("Failure")
+            .description("Failed OPC Data read")
             .build();
 
     private List<PropertyDescriptor> descriptors;
@@ -108,15 +127,17 @@ public class GetValue extends AbstractProcessor {
 
     @Override
     protected void init(final ProcessorInitializationContext context) {
-        final List<PropertyDescriptor> descriptors = new ArrayList<PropertyDescriptor>();
+        final List<PropertyDescriptor> descriptors = new ArrayList<>();
         descriptors.add(OPCUA_SERVICE);
         descriptors.add(RETURN_TIMESTAMP);
         descriptors.add(EXCLUDE_NULL_VALUE);
         descriptors.add(NULL_VALUE_STRING);
+        descriptors.add(TAG_LIST_FILE);
+        descriptors.add(TAG_LIST_SOURCE);
         
         this.descriptors = Collections.unmodifiableList(descriptors);
 
-        final Set<Relationship> relationships = new HashSet<Relationship>();
+        final Set<Relationship> relationships = new HashSet<>();
         relationships.add(SUCCESS);
         relationships.add(FAILURE);
         this.relationships = Collections.unmodifiableSet(relationships);
@@ -134,9 +155,20 @@ public class GetValue extends AbstractProcessor {
 
     @OnScheduled
     public void onScheduled(final ProcessContext context) {
+        logger = getLogger();
         timestamp.set(context.getProperty(RETURN_TIMESTAMP).getValue());
         excludeNullValue.set(context.getProperty(EXCLUDE_NULL_VALUE).getValue());
-        nullValueString.set(context.getProperty(NULL_VALUE_STRING).getValue());
+        if (context.getProperty(NULL_VALUE_STRING).isSet()) {
+            nullValueString = context.getProperty(NULL_VALUE_STRING).getValue();
+        }
+        if (context.getProperty(TAG_LIST_SOURCE).toString().equals("Property") && query.equals(""))
+        {
+            try {
+                query = parseFile(Paths.get(context.getProperty(TAG_LIST_FILE).toString()));
+            } catch (IOException e) {
+                logger.error("Error reading tag list from Property.");
+            }
+        }
 	}
 
     /* (non-Javadoc)
@@ -144,38 +176,10 @@ public class GetValue extends AbstractProcessor {
      */
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) throws ProcessException {
-    	
-    	final ComponentLog logger = getLogger();
-    	
+        logger = getLogger();
+
     	// Initialize  response variable
         final AtomicReference<List<String>> requestedTagnames = new AtomicReference<>();
-
-        // get FlowFile
-        FlowFile flowFile = session.get();
-        if ( flowFile == null ) {
-            return;
-        }
-        // Read tag name from flow file content
-        session.read(flowFile, new InputStreamCallback() {
-            @Override
-            public void process(InputStream in) throws IOException {
-            	
-                try{
-                	List<String> tagname = new BufferedReader(new InputStreamReader(in))
-                	.lines().collect(Collectors.toList());
-                	
-                    requestedTagnames.set(tagname);
-                    
-                }catch (Exception e) {
-        			// TODO Auto-generated catch block
-        			e.printStackTrace();
-        			logger.error("Failed to read");
-        		}
-        		
-            }
-            
-        });
-        
         // Submit to getValue
         OPCUAService opcUAService;
 
@@ -187,6 +191,54 @@ public class GetValue extends AbstractProcessor {
             logger.error(ex.getMessage());
             return;
         }
+        if (context.getProperty(TAG_LIST_SOURCE).toString().equals("Flowfile")) {
+
+            // get FlowFile
+            FlowFile flowFile = session.get();
+            if (flowFile == null)
+                return;
+
+            // Read tag name from flow file content
+            session.read(flowFile, in -> {
+
+                try {
+                    List<String> tagname = new BufferedReader(new InputStreamReader(in))
+                            .lines().collect(Collectors.toList());
+
+                    requestedTagnames.set(tagname);
+
+                } catch (Exception e) {
+                    logger.error("Failed to read flowfile " + e.getMessage());
+                }
+
+            });
+        }
+        else
+        {
+            try {
+                if (query.equals(""))
+                {
+                    try {
+                        query = parseFile(Paths.get(context.getProperty(TAG_LIST_FILE).toString()));
+                    } catch (IOException e) {
+                        logger.error("Error reading tag list from Property.");
+                    }
+                }
+                if (query.equals(""))
+                {
+                    logger.error("Tag list " + opcUAService.getCurrentTagList() + " not registered in the tag list registry correctly.");
+                    return;
+                }
+                List<String> tagNamesList = new BufferedReader(new StringReader(query)).lines().collect(Collectors.toList());
+                requestedTagnames.set(tagNamesList);
+            }
+            catch (Exception ex){
+                logger.error(ex.getMessage());
+                return;
+            }
+        }
+        
+
 
 
         if(opcUAService.updateSession()){
@@ -195,18 +247,15 @@ public class GetValue extends AbstractProcessor {
         	logger.debug("Session update failed");
         }
 
-        byte[] values = opcUAService.getValue(requestedTagnames.get(),timestamp.get(),excludeNullValue.get(),nullValueString.get());
-
+        byte[] values = opcUAService.getValue(requestedTagnames.get(),timestamp.get(),excludeNullValue.get(),nullValueString);
+        FlowFile flowFile;
+        flowFile = session.get();
+        if (flowFile == null)
+            flowFile = session.create();
   		// Write the results back out to flow file
         try{
-        flowFile = session.write(flowFile, new OutputStreamCallback() {
 
-            @Override
-            public void process(OutputStream out) throws IOException {
-                out.write(values);
-            }
-            
-        });
+            flowFile = session.write(flowFile, out -> out.write(values));
         
         session.transfer(flowFile, SUCCESS);
         } catch (ProcessException ex) {
@@ -214,5 +263,11 @@ public class GetValue extends AbstractProcessor {
         	session.transfer(flowFile, FAILURE);
         }
     }
-    
+
+    private String parseFile(Path filePath) throws IOException
+    {
+        byte[] encoded;
+        encoded = Files.readAllBytes(filePath);
+        return new String(encoded, Charset.defaultCharset());
+    }
 }

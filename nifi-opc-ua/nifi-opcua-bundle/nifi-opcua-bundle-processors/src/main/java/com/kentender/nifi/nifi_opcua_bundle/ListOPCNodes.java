@@ -34,11 +34,10 @@ import com.kentender.nifi.nifi_opcua_services.OPCUAService;
 
 @Tags({"OPC", "OPCUA", "UA"})
 @CapabilityDescription("Retrieves the namespace from an OPC UA server")
-@SeeAlso({})
 @ReadsAttributes({@ReadsAttribute(attribute="", description="")})
 @WritesAttributes({@WritesAttribute(attribute="", description="")})
 
-public class GetNodeIds extends AbstractProcessor {
+public class ListOPCNodes extends AbstractProcessor {
 	
 	private static String starting_node = null;
 	private static String print_indentation = "No";
